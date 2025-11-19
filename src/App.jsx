@@ -717,7 +717,7 @@ Thanks for doing business with us!`,
           position: absolute;
           right: 8px;
           margin-top:200px;
-          bottom: -0px;
+          bottom: 20px;
           text-align: center;
           font-size: 8px;
         }
