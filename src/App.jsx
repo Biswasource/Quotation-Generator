@@ -6,8 +6,11 @@ import {
   Settings,
   Download,
   Upload,
+  CheckCircle,
 } from "lucide-react";
-import logoImage from "./assets/hyperlogo.png";
+import html2pdf from "html2pdf.js";
+import { Link } from "react-router";
+
 const SUPABASE_URL = "https://bwpbffyiggkomneomtch.supabase.co";
 const SUPABASE_KEY =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ3cGJmZnlpZ2drb21uZW9tdGNoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjM0MzQ3NjIsImV4cCI6MjA3OTAxMDc2Mn0.KrKtx23tflFy8ehIC_7jKh-Y4NDUNOvgQ9AoMlAu-I0";
@@ -64,7 +67,6 @@ class SupabaseClient {
 
 const supabase = new SupabaseClient(SUPABASE_URL, SUPABASE_KEY);
 
-// Function to convert number to words (Indian style)
 function numberToWords(num) {
   const ones = [
     "",
@@ -154,7 +156,7 @@ export default function QuotationGenerator() {
       .toISOString()
       .split("T")[0],
     notes: "",
-    documentTitle: "QUOTATION", // Add this
+    documentTitle: "QUOTATION",
     companyName: "Hyperdigitech Pvt Ltd",
     companyAddress:
       "Plot no-43, TRIFED, Meghdoot Streets, Saheednagar, 751007 Bhubaneswar, Khorda, Odisha, 751007",
@@ -175,12 +177,13 @@ After every event, and approval, Rest amount must be paid Final delivery and App
 All payments are non-refundable once work has commenced.
 
 Scope & Revisions:
-Work will follow the approved SRS or documentation. Additional features or major changes will be charged separately.
+Work will follow the approved SRS or documentation.<br/> Additional features or major changes will be<br/> charged separately.
 
-Thanks for doing business with us!`, // Add this
+Thanks for doing business with us!`,
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
 
   useEffect(() => {
     fetchServices();
@@ -324,14 +327,150 @@ Thanks for doing business with us!`, // Add this
     }
   };
 
+  const IMAGEKIT_PUBLIC_KEY = "your_imagekit_public_key";
+  const IMAGEKIT_URL_ENDPOINT = "https://ik.imagekit.io/your_account_id";
+  const IMAGEKIT_PRIVATE_KEY = "your_imagekit_private_key"; // Store this securely in backend
+
   const total = selectedServices.reduce((sum, id) => {
     const service = services.find((s) => s.id === id);
     return sum + (service?.price || 0);
   }, 0);
 
-  const generatePDF = () => {
-    if (!selectedClient || selectedServices.length === 0) {
-      setError("Please select a client and at least one service");
+  const uploadPdfToImageKit = async (pdfBlob, fileName) => {
+    try {
+      const file = new File([pdfBlob], fileName, { type: "application/pdf" });
+
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("fileName", fileName);
+      formData.append("folder", "/quotations");
+
+      const response = await fetch(`${IMAGEKIT_URL_ENDPOINT}/upload`, {
+        method: "POST",
+        headers: {
+          Authorization: `Basic ${btoa(IMAGEKIT_PUBLIC_KEY + ":")}`,
+        },
+        body: formData,
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to upload PDF to ImageKit");
+      }
+
+      const data = await response.json();
+      return data.url; // Returns the public URL of uploaded PDF
+    } catch (err) {
+      console.error("ImageKit upload error:", err);
+      throw err;
+    }
+  };
+
+  const generatePdfFromHtml = async (htmlContent, fileName) => {
+    return new Promise((resolve, reject) => {
+      const element = document.createElement("div");
+      element.innerHTML = htmlContent;
+
+      const options = {
+        margin: 5,
+        filename: fileName,
+        image: { type: "jpeg", quality: 0.98 },
+        html2canvas: { scale: 2 },
+        jsPDF: { orientation: "portrait", unit: "mm", format: "a4" },
+      };
+
+      html2pdf()
+        .set(options)
+        .from(element)
+        .toPdf()
+        .output("blob")
+        .then((blob) => {
+          resolve(blob);
+        })
+        .catch((err) => {
+          reject(err);
+        });
+    });
+  };
+
+  // Add this import at the top of your file:
+  // import html2pdf from 'html2pdf.js';
+
+  const saveQuotationToSupabase = async (htmlContent) => {
+    if (!selectedClient || !selectedClient.id) {
+      setError("Please select a client");
+      return false;
+    }
+
+    if (selectedServices.length === 0) {
+      setError("Please select at least one service");
+      return false;
+    }
+
+    if (!billDetails.invoiceNo || billDetails.invoiceNo.trim() === "") {
+      setError("Please enter a quotation number");
+      return false;
+    }
+
+    try {
+      const quotationData = {
+        quote_number: billDetails.invoiceNo.trim(),
+        client_name: selectedClient.name,
+        client_email: selectedClient.email,
+        client_phone: selectedClient.phone,
+        client_address: selectedClient.address,
+        service_description: selectedServices
+          .map((id) => services.find((s) => s.id === id)?.name)
+          .join(", "),
+        quantity: selectedServices.length,
+        rate: total / selectedServices.length,
+        total_amount: total,
+        date: billDetails.date,
+        expiry_date: billDetails.dueDate,
+        notes: billDetails.notes,
+        company_name: billDetails.companyName,
+        company_address: billDetails.companyAddress,
+        company_email: billDetails.companyEmail,
+        company_phone: billDetails.companyPhone,
+        company_website: billDetails.companyWebsite,
+        bank_name: billDetails.bankName,
+        ifsc_code: billDetails.ifscCode,
+        account_number: billDetails.accountNo,
+        bank_branch: billDetails.bankBranch,
+        terms_and_conditions: billDetails.termsAndConditions,
+        html_content: htmlContent,
+        status: "draft",
+      };
+
+      await supabase.insert("quotations", quotationData);
+
+      setSuccess(`Quotation ${billDetails.invoiceNo} saved successfully!`);
+      setTimeout(() => setSuccess(""), 5000);
+      return true;
+    } catch (err) {
+      setError(`Failed to save quotation: ${err.message}`);
+      console.error(err);
+      return false;
+    }
+  };
+
+  const generatePDF = async () => {
+    if (!selectedClient) {
+      setError("Please select a client");
+      return;
+    }
+
+    if (selectedServices.length === 0) {
+      setError("Please select at least one service");
+      return;
+    }
+
+    if (!logoImage) {
+      setError("Please upload a company logo");
+      return;
+    }
+
+    if (!billDetails.invoiceNo) {
+      setError("Please enter a quotation number");
       return;
     }
 
@@ -343,422 +482,440 @@ Thanks for doing business with us!`, // Add this
     )}.html`;
 
     const htmlContent = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <style>
-          * { margin: 0; padding: 0; box-sizing: border-box; }
-          body { font-family: 'Arial', sans-serif; background: white; }
-          
-          .page { 
-            width: 210mm; 
-            height: 297mm; 
-            margin: 0 auto; 
-            padding: 10mm; 
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Arial', sans-serif; background: white; }
+        
+        .page { 
+          width: 210mm; 
+          height: 297mm; 
+          margin: 0 auto; 
+          padding: 10mm; 
+          background: white;
+        }
+        
+        .header-container { 
+          display: flex; 
+          justify-content: space-between; 
+          align-items: flex-start; 
+          border: 2px solid #000;
+          padding: 8px;
+          margin-bottom: 0;
+        }
+        
+        .logo-box { 
+          width: 80px; 
+          height: 80px; 
+          background: #000;
+          display: flex; 
+          align-items: center; 
+          justify-content: center;
+          flex-shrink: 0;
+        }
+        
+        .logo-box img { 
+          max-width: 100%; 
+          max-height: 100%; 
+          object-fit: contain; 
+        }
+        
+        .company-info { 
+          flex: 1; 
+          padding: 0 15px;
+          font-size: 9px;
+          line-height: 1.4;
+        }
+        
+        .company-info h1 { 
+          font-size: 16px; 
+          font-weight: bold; 
+          margin-bottom: 2px;
+        }
+        
+        .company-info p { 
+          margin: 1px 0;
+        }
+        
+        .quotation-meta { 
+          text-align: right;
+          font-size: 9px;
+          line-height: 1.6;
+          min-width: 150px;
+        }
+        
+        .quotation-meta strong { 
+          display: inline-block;
+          width: 90px;
+          text-align: left;
+        }
+        
+        .quotation-title-bar {
+          background: #000;
+          color: white;
+          text-align: center;
+          padding: 6px;
+          font-size: 14px;
+          font-weight: bold;
+          letter-spacing: 2px;
+          margin-bottom: 0;
+        }
+        
+        .bill-to-section {
+          border: 2px solid #000;
+          border-top: none;
+          padding: 8px;
+          margin-bottom: 8px;
+          font-size: 9px;
+          line-height: 1.5;
+        }
+        
+        .bill-to-section strong {
+          display: block;
+          margin-bottom: 3px;
+          font-size: 10px;
+        }
+        
+        table { 
+          width: 100%; 
+          border-collapse: collapse; 
+          font-size: 9px;
+          margin-bottom: 0;
+        }
+        
+        thead { 
+          background-color: #000; 
+          color: white; 
+        }
+        
+        th { 
+          padding: 8px 5px; 
+          text-align: center; 
+          font-weight: bold; 
+          border: 1px solid #000;
+          font-size: 9px;
+        }
+        
+        td { 
+          padding: 8px 5px; 
+          border: 1px solid #000;
+          text-align: center;
+        }
+        
+        .service-col { text-align: left; }
+        .amount-col { text-align: right; }
+        
+        tbody tr {
+          height: 100px;
+          vertical-align: top;
+        }
+        
+        .total-row td {
+          height: auto;
+          padding: 6px 5px;
+          font-weight: bold;
+        }
+        
+        .tax-section {
+          border: 2px solid #000;
+          border-top: none;
+          margin-bottom: 8px;
+        }
+        
+        .tax-row {
+          display: flex;
+          border-bottom: 1px solid #000;
+          font-size: 9px;
+        }
+        
+        .tax-row:last-child {
+          border-bottom: none;
+        }
+        
+        .tax-cell {
+          padding: 6px 8px;
+          border-right: 1px solid #000;
+          text-align: center;
+        }
+        
+        .tax-cell:last-child {
+          border-right: none;
+        }
+        
+        .tax-header {
+          background: #000;
+          color: white;
+          font-weight: bold;
+        }
+        
+        .tax-label {
+          width: 15%;
+          text-align: left;
+        }
+        
+        .tax-value {
+          width: 17%;
+        }
+        
+        .tax-rate {
+          width: 10%;
+        }
+        
+        .tax-amount {
+          width: 15%;
+          text-align: right;
+        }
+        
+        .total-amount {
+          width: 18%;
+          text-align: right;
+        }
+        
+        .amount-in-words {
+          border: 2px solid #000;
+          border-top: none;
+          padding: 6px 8px;
+          margin-bottom: 8px;
+          font-size: 9px;
+        }
+        
+        .amount-in-words strong {
+          display: block;
+          margin-bottom: 2px;
+        }
+        
+        .bottom-section {
+          display: flex;
+          gap: 8px;
+          font-size: 9px;
+        }
+        
+        .bank-details, .terms-conditions {
+          flex: 1;
+          border: 2px solid #000;
+          padding: 8px;
+        }
+        
+        .bank-details h3, .terms-conditions h3 {
+          font-size: 10px;
+          margin-bottom: 6px;
+          text-decoration: underline;
+        }
+        
+        .bank-details p, .terms-conditions p {
+          margin: 3px 0;
+          line-height: 1.4;
+        }
+        
+        .terms-conditions {
+          position: relative;
+        }
+        
+        .signature-box {
+          position: absolute;
+          right: 8px;
+          margin-top:200px;
+          bottom: -0px;
+          text-align: center;
+          font-size: 8px;
+        }
+        
+        .signature-box img {
+          max-width: 100px;
+          max-height: 50px;
+          margin-bottom: 3px;
+        }
+        
+        .signature-line {
+          border-top: 1px solid #000;
+          padding-top: 3px;
+          margin-top: 5px;
+          font-weight: bold;
+        }
+        
+        @media print {
+          body { 
+            margin: 0; 
+            padding: 0; 
             background: white;
           }
-          
-          .header-container { 
-            display: flex; 
-            justify-content: space-between; 
-            align-items: flex-start; 
-            border: 2px solid #000;
-            padding: 8px;
-            margin-bottom: 0;
+          .page { 
+            margin: 0;
+            page-break-after: always;
           }
-          
-          .logo-box { 
-            width: 80px; 
-            height: 80px; 
-            background: #000;
-            display: flex; 
-            align-items: center; 
-            justify-content: center;
-            flex-shrink: 0;
-          }
-          
-          .logo-box img { 
-            max-width: 100%; 
-            max-height: 100%; 
-            object-fit: contain; 
-          }
-          
-          .company-info { 
-            flex: 1; 
-            padding: 0 15px;
-            font-size: 9px;
-            line-height: 1.4;
-          }
-          
-          .company-info h1 { 
-            font-size: 16px; 
-            font-weight: bold; 
-            margin-bottom: 2px;
-          }
-          
-          .company-info p { 
-            margin: 1px 0;
-          }
-          
-          .quotation-meta { 
-            text-align: right;
-            font-size: 9px;
-            line-height: 1.6;
-            min-width: 150px;
-          }
-          
-          .quotation-meta strong { 
-            display: inline-block;
-            width: 90px;
-            text-align: left;
-          }
-          
-          .quotation-title-bar {
-            background: #000;
-            color: white;
-            text-align: center;
-            padding: 6px;
-            font-size: 14px;
-            font-weight: bold;
-            letter-spacing: 2px;
-            margin-bottom: 0;
-          }
-          
-          .bill-to-section {
-            border: 2px solid #000;
-            border-top: none;
-            padding: 8px;
-            margin-bottom: 8px;
-            font-size: 9px;
-            line-height: 1.5;
-          }
-          
-          .bill-to-section strong {
-            display: block;
-            margin-bottom: 3px;
-            font-size: 10px;
-          }
-          
-          table { 
-            width: 100%; 
-            border-collapse: collapse; 
-            font-size: 9px;
-            margin-bottom: 0;
-          }
-          
-          thead { 
-            background-color: #000; 
-            color: white; 
-          }
-          
-          th { 
-            padding: 8px 5px; 
-            text-align: center; 
-            font-weight: bold; 
-            border: 1px solid #000;
-            font-size: 9px;
-          }
-          
-          td { 
-            padding: 8px 5px; 
-            border: 1px solid #000;
-            text-align: center;
-          }
-          
-          .service-col { text-align: left; }
-          .amount-col { text-align: right; }
-          
-          tbody tr {
-            height: 100px;
-            vertical-align: top;
-          }
-          
-          .total-row td {
-            height: auto;
-            padding: 6px 5px;
-            font-weight: bold;
-          }
-          
-          .tax-section {
-            border: 2px solid #000;
-            border-top: none;
-            margin-bottom: 8px;
-          }
-          
-          .tax-row {
-            display: flex;
-            border-bottom: 1px solid #000;
-            font-size: 9px;
-          }
-          
-          .tax-row:last-child {
-            border-bottom: none;
-          }
-          
-          .tax-cell {
-            padding: 6px 8px;
-            border-right: 1px solid #000;
-            text-align: center;
-          }
-          
-          .tax-cell:last-child {
-            border-right: none;
-          }
-          
-          .tax-header {
-            background: #000;
-            color: white;
-            font-weight: bold;
-          }
-          
-          .tax-label {
-            width: 15%;
-            text-align: left;
-          }
-          
-          .tax-value {
-            width: 17%;
-          }
-          
-          .tax-rate {
-            width: 10%;
-          }
-          
-          .tax-amount {
-            width: 15%;
-            text-align: right;
-          }
-          
-          .total-amount {
-            width: 18%;
-            text-align: right;
-          }
-          
-          .amount-in-words {
-            border: 2px solid #000;
-            border-top: none;
-            padding: 6px 8px;
-            margin-bottom: 8px;
-            font-size: 9px;
-          }
-          
-          .amount-in-words strong {
-            display: block;
-            margin-bottom: 2px;
-          }
-          
-          .bottom-section {
-            display: flex;
-            gap: 8px;
-            font-size: 9px;
-          }
-          
-          .bank-details, .terms-conditions {
-            flex: 1;
-            border: 2px solid #000;
-            padding: 8px;
-          }
-          
-          .bank-details h3, .terms-conditions h3 {
-            font-size: 10px;
-            margin-bottom: 6px;
-            text-decoration: underline;
-          }
-          
-          .bank-details p, .terms-conditions p {
-            margin: 3px 0;
-            line-height: 1.4;
-          }
-          
-          .terms-conditions {
-            position: relative;
-          }
-          
-          .signature-box {
-            position: absolute;
-            right: 8px;
-
-            margin-top:200px;
-            bottom: -0px;
-            text-align: center;
-            font-size: 8px;
-          }
-          
-          .signature-box img {
-            max-width: 100px;
-            max-height: 50px;
-            margin-bottom: 3px;
-          }
-          
-          .signature-line {
-            border-top: 1px solid #000;
-            padding-top: 3px;
-            margin-top: 5px;
-            font-weight: bold;
-          }
-          
-          @media print {
-            body { 
-              margin: 0; 
-              padding: 0; 
-              background: white;
-            }
-            .page { 
-              margin: 0;
-              page-break-after: always;
-            }
-          }
-        </style>
-      </head>
-      <body>
-        <div class="page">
-          <div class="header-container">
-            <div class="logo-box">
-              <img src="${logoImage}" alt="Logo">
-            </div>
-            
-            <div class="company-info">
-              <h1>${billDetails.companyName}</h1>
-              <p>${billDetails.companyAddress}</p>
-              <p>Mobile: ${billDetails.companyPhone}</p>
-              <p>Email: ${billDetails.companyEmail}</p>
-              <p>in@smartech - ${billDetails.companyWebsite}</p>
-            </div>
-            
-            <div class="quotation-meta">
-              <p><strong>Quotation No.</strong> ${
-                billDetails.invoiceNo || "DRAFT"
-              }</p>
-              <p><strong>Quotation Date</strong> ${billDetails.date}</p>
-              <p><strong>Expiry Date</strong> ${billDetails.dueDate}</p>
-            </div>
+        }
+      </style>
+    </head>
+    <body>
+      <div class="page">
+        <div class="header-container">
+          <div class="logo-box">
+            <img src="${logoImage}" alt="Logo">
           </div>
           
-          <div class="quotation-title-bar">${billDetails.documentTitle}</div>
-          
-          <div class="bill-to-section">
-            <strong>BILL TO</strong>
-            <p>${selectedClient.name}</p>
-            <p>Mobile: ${selectedClient.phone}</p>
-              <p>email: ${selectedClient.email}</p>
-                <p>Address: ${selectedClient.address}</p>
+          <div class="company-info">
+            <h1>${billDetails.companyName}</h1>
+            <p>${billDetails.companyAddress}</p>
+            <p>Mobile: ${billDetails.companyPhone}</p>
+            <p>Email: ${billDetails.companyEmail}</p>
+            <p>Website: ${billDetails.companyWebsite}</p>
           </div>
           
-          <table>
-            <thead>
-              <tr>
-                <th style="width: 8%;">S.NO.</th>
-                <th style="width: 52%;">SERVICES</th>
-                <th style="width: 10%;">QTY</th>
-                <th style="width: 15%;">RATE</th>
-                <th style="width: 15%;">AMOUNT</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${selectedServices
-                .map((id, index) => {
-                  const service = services.find((s) => s.id === id);
-                  return `
-              <tr>
-                <td>${index + 1}</td>
-                <td class="service-col">${service.name}</td>
-                <td>1 PCS</td>
-                <td>${service.price.toLocaleString("en-IN")}</td>
-                <td class="amount-col">${service.price.toLocaleString(
-                  "en-IN"
-                )}</td>
-              </tr>`;
-                })
-                .join("")}
-              <tr class="total-row">
-                <td colspan="3"></td>
-                <td><strong>TOTAL</strong></td>
-                <td class="amount-col"><strong>₹ ${total.toLocaleString(
-                  "en-IN"
-                )}</strong></td>
-              </tr>
-            </tbody>
-          </table>
-          
-          <div class="tax-section">
-            <div class="tax-row tax-header">
-              <div class="tax-cell tax-label">HSN/SAC</div>
-              <div class="tax-cell tax-value">Taxable Value</div>
-              <div class="tax-cell tax-rate">Rate</div>
-              <div class="tax-cell tax-amount" style="width: 12%;">CGST<br>Amount</div>
-              <div class="tax-cell tax-rate">Rate</div>
-              <div class="tax-cell tax-amount" style="width: 12%;">SGST<br>Amount</div>
-              <div class="tax-cell total-amount">Total Tax Amount</div>
-            </div>
-            <div class="tax-row">
-              <div class="tax-cell tax-label"></div>
-              <div class="tax-cell tax-value">${total.toLocaleString(
-                "en-IN"
-              )}</div>
-              <div class="tax-cell tax-rate">0%</div>
-              <div class="tax-cell tax-amount" style="width: 12%;">0</div>
-              <div class="tax-cell tax-rate">0%</div>
-              <div class="tax-cell tax-amount" style="width: 12%;">0</div>
-              <div class="tax-cell total-amount">₹ 0</div>
-            </div>
-            <div class="tax-row">
-              <div class="tax-cell tax-label"><strong>Total</strong></div>
-              <div class="tax-cell tax-value"><strong>${total.toLocaleString(
-                "en-IN"
-              )}</strong></div>
-              <div class="tax-cell tax-rate"></div>
-              <div class="tax-cell tax-amount" style="width: 12%;"><strong>0</strong></div>
-              <div class="tax-cell tax-rate"></div>
-              <div class="tax-cell tax-amount" style="width: 12%;"><strong>0</strong></div>
-              <div class="tax-cell total-amount"><strong>₹ 0</strong></div>
-            </div>
-          </div>
-          
-          <div class="amount-in-words">
-            <strong>Total Amount (in words)</strong>
-            <p>${totalInWords}</p>
-          </div>
-          
-          <div class="bottom-section">
-            <div class="bank-details">
-              <h3>Bank Details</h3>
-              <p><strong>Name:</strong> ${billDetails.bankName}</p>
-              <p><strong>IFSC Code:</strong> ${billDetails.ifscCode}</p>
-              <p><strong>Account No:</strong> ${billDetails.accountNo}</p>
-              <p><strong>Bank:</strong> ${billDetails.bankBranch}</p>
-            </div>
-            
-            <div class="terms-conditions">
-  <h3>Terms and Conditions</h3>
-  <p style="white-space: pre-line;">${billDetails.termsAndConditions}</p>
-  
-  <div class="signature-box">
-    ${
-      signatureImage
-        ? `<img src="${signatureImage}" alt="Signature">`
-        : '<div style="height: 50px;"></div>'
-    }
-    <div class="signature-line">Authorised Signatory For<br>${
-      billDetails.companyName
-    }</div>
-  </div>
-</div>
+          <div class="quotation-meta">
+            <p><strong>Quotation No.</strong> ${
+              billDetails.invoiceNo || "DRAFT"
+            }</p>
+            <p><strong>Quotation Date</strong> ${billDetails.date}</p>
+            <p><strong>Expiry Date</strong> ${billDetails.dueDate}</p>
           </div>
         </div>
-      </body>
-      </html>
-    `;
-    const blob = new Blob([htmlContent], { type: "text/html" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = fileName;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  };
+        
+        <div class="quotation-title-bar">${billDetails.documentTitle}</div>
+        
+        <div class="bill-to-section">
+          <strong>BILL TO</strong>
+          <p>${selectedClient.name}</p>
+          <p>Mobile: ${selectedClient.phone}</p>
+          <p>email: ${selectedClient.email}</p>
+          <p>Address: ${selectedClient.address}</p>
+        </div>
+        
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 8%;">S.NO.</th>
+              <th style="width: 52%;">SERVICES</th>
+              <th style="width: 10%;">QTY</th>
+              <th style="width: 15%;">RATE</th>
+              <th style="width: 15%;">AMOUNT</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${selectedServices
+              .map((id, index) => {
+                const service = services.find((s) => s.id === id);
+                return `
+            <tr>
+              <td>${index + 1}</td>
+              <td class="service-col">${service.name}</td>
+              <td>1 PCS</td>
+              <td>${service.price.toLocaleString("en-IN")}</td>
+              <td class="amount-col">${service.price.toLocaleString(
+                "en-IN"
+              )}</td>
+            </tr>`;
+              })
+              .join("")}
+            <tr class="total-row">
+              <td colspan="3"></td>
+              <td><strong>TOTAL</strong></td>
+              <td class="amount-col"><strong>₹ ${total.toLocaleString(
+                "en-IN"
+              )}</strong></td>
+            </tr>
+          </tbody>
+        </table>
+        
+        <div class="tax-section">
+          <div class="tax-row tax-header">
+            <div class="tax-cell tax-label">HSN/SAC</div>
+            <div class="tax-cell tax-value">Taxable Value</div>
+            <div class="tax-cell tax-rate">Rate</div>
+            <div class="tax-cell tax-amount" style="width: 12%;">CGST<br>Amount</div>
+            <div class="tax-cell tax-rate">Rate</div>
+            <div class="tax-cell tax-amount" style="width: 12%;">SGST<br>Amount</div>
+            <div class="tax-cell total-amount">Total Tax Amount</div>
+          </div>
+          <div class="tax-row">
+            <div class="tax-cell tax-label"></div>
+            <div class="tax-cell tax-value">${total.toLocaleString(
+              "en-IN"
+            )}</div>
+            <div class="tax-cell tax-rate">0%</div>
+            <div class="tax-cell tax-amount" style="width: 12%;">0</div>
+            <div class="tax-cell tax-rate">0%</div>
+            <div class="tax-cell tax-amount" style="width: 12%;">0</div>
+            <div class="tax-cell total-amount">₹ 0</div>
+          </div>
+          <div class="tax-row">
+            <div class="tax-cell tax-label"><strong>Total</strong></div>
+            <div class="tax-cell tax-value"><strong>${total.toLocaleString(
+              "en-IN"
+            )}</strong></div>
+            <div class="tax-cell tax-rate"></div>
+            <div class="tax-cell tax-amount" style="width: 12%;"><strong>0</strong></div>
+            <div class="tax-cell tax-rate"></div>
+            <div class="tax-cell tax-amount" style="width: 12%;"><strong>0</strong></div>
+            <div class="tax-cell total-amount"><strong>₹ 0</strong></div>
+          </div>
+        </div>
+        
+        <div class="amount-in-words">
+          <strong>Total Amount (in words)</strong>
+          <p>${totalInWords}</p>
+        </div>
+        
+        <div class="bottom-section">
+          <div class="bank-details">
+            <h3>Bank Details</h3>
+            <p><strong>Name:</strong> ${billDetails.bankName}</p>
+            <p><strong>IFSC Code:</strong> ${billDetails.ifscCode}</p>
+            <p><strong>Account No:</strong> ${billDetails.accountNo}</p>
+            <p><strong>Bank:</strong> ${billDetails.bankBranch}</p>
+          </div>
+          
+          <div class="terms-conditions">
+            <h3>Terms and Conditions</h3>
+            <p style="white-space: pre-line;">${
+              billDetails.termsAndConditions
+            }</p>
+            
+            <div class="signature-box">
+              ${
+                signatureImage
+                  ? `<img src="${signatureImage}" alt="Signature">`
+                  : '<div style="height: 50px;"></div>'
+              }
+              <div class="signature-line">Authorised Signatory For<br>${
+                billDetails.companyName
+              }</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
 
+    setLoading(true);
+    try {
+      // Save to Supabase
+      const saved = await saveQuotationToSupabase(htmlContent);
+
+      if (saved) {
+        // Convert HTML to PDF and download
+        const element = document.createElement("div");
+        element.innerHTML = htmlContent;
+
+        const options = {
+          margin: 5,
+          filename: fileName.replace(".html", ".pdf"),
+          image: { type: "jpeg", quality: 0.98 },
+          html2canvas: { scale: 2 },
+          jsPDF: { orientation: "portrait", unit: "mm", format: "a4" },
+        };
+
+        html2pdf().set(options).from(element).save();
+      }
+    } catch (err) {
+      setError(`Error: ${err.message}`);
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
       <div className="max-w-6xl mx-auto p-6">
@@ -822,14 +979,28 @@ Thanks for doing business with us!`, // Add this
           </div>
         )}
 
+        {success && (
+          <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg text-green-700 flex items-center gap-2">
+            <CheckCircle size={20} />
+            {success}
+          </div>
+        )}
+
         {screen === "home" && (
           <div className="bg-white rounded-lg shadow-lg p-8">
             <h2 className="text-2xl font-bold text-gray-800 mb-4">Welcome</h2>
             <p className="text-gray-600 mb-6">
               Create professional quotations with your company logo. Start by
               adding services, then manage clients, and finally generate PDF
-              quotations.
+              quotations. All quotations are automatically saved to the
+              database.
             </p>
+
+            <Link to="/dashboard">
+              <button className="bg-blue-700 px-4 py-2 text-white rounded-2xl">
+                Dashboard
+              </button>
+            </Link>
             <div className="grid md:grid-cols-3 gap-4">
               <div className="bg-blue-50 p-6 rounded-lg">
                 <h3 className="font-semibold text-blue-900 mb-2">
@@ -1400,7 +1571,10 @@ Thanks for doing business with us!`, // Add this
                   className="w-full px-6 py-3 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 transition flex items-center justify-center gap-2 disabled:opacity-50"
                   disabled={loading}
                 >
-                  <Download size={20} /> Download HTML Quotation
+                  <Download size={20} />{" "}
+                  {loading
+                    ? "Saving & Downloading..."
+                    : "Download HTML Quotation"}
                 </button>
               </div>
             </div>
